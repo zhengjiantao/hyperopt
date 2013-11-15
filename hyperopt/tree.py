@@ -28,19 +28,30 @@ from pyll.stochastic import (
     quniform,
     qloguniform,
     )
-from .base import miscs_to_idxs_vals
+from .base import miscs_to_idxs_vals, Trials
 from .algobase import (
     SuggestAlgo,
     ExprEvaluator,
     make_suggest_many_from_suggest_one,
     )
 from .pyll_utils import expr_to_config, Cond
+import rand
+from fmin import fmin
 
 logger = logging.getLogger(__name__)
 
+def EI(mean, var, thresh):
+    raise NotImplementedError()
+
+
+def UCB(mean, var, zscore):
+    return mean + np.sqrt(var) * zscore
+
+
 class TreeAlgo(SuggestAlgo):
 
-    def __init__(self, domain, trials, seed):
+    def __init__(self, domain, trials, seed,
+                 sub_suggest=rand.suggest):
         SuggestAlgo.__init__(self, domain, trials, seed=seed)
 
         doc_by_tid = {}
@@ -61,6 +72,7 @@ class TreeAlgo(SuggestAlgo):
             [d['misc'] for (tid, (d, l)) in self.tid_docs_losses],
             keys=domain.params.keys())
         self.best_tids = []
+        self.sub_suggest = sub_suggest
 
         config = {}
         expr_to_config(domain.expr, None, config)
@@ -68,6 +80,7 @@ class TreeAlgo(SuggestAlgo):
         self.conditions = dict([(k, config[k]['conditions'])
                             for k in config])
         self.tree_ = self.recursive_split(self.tids, {})
+        self.best_pt = self.optimize_in_model()
 
     def recursive_split(self, tids, conditions):
         """
@@ -89,6 +102,22 @@ class TreeAlgo(SuggestAlgo):
                 else:
                     return False
             return True
+        if len(tids) < 2:
+            return {
+                'node': 'leaf',
+                'mean': 0,
+                'var': 1,
+                'n': len(tids)}
+
+        Y = np.empty((len(tids),))
+        for ii, tid in enumerate(tids):
+            Y[ii] = self.losses[list(self.tids).index(tid)]
+
+        leaf_rval = {
+            'node': 'leaf',
+            'mean': Y.mean(),
+            'var': Y.var(),
+            'n': len(Y)}
 
         #print 'CONDITIONS:', conditions
         #print 'CRITERIA:', self.conditions
@@ -96,25 +125,26 @@ class TreeAlgo(SuggestAlgo):
                if any(map(satisfied, criteria))]
         #print 'SPLITTABLE:', hps
         if not hps:
-            return None
+            return leaf_rval
 
         X = np.empty((len(tids), len(hps)))
-        Y = np.empty((len(tids),))
         node_vals = self.node_vals
         node_tids = self.node_tids
         # TODO: better data structures to make this faster
         for ii, tid in enumerate(tids):
             for jj, hp in enumerate(hps):
                 X[ii, jj] = node_vals[hp][node_tids[hp].index(tid)]
-            Y[ii] = self.losses[list(self.tids).index(tid)]
 
         #print X
-        dtr = DecisionTreeRegressor(max_depth=1)
+        dtr = DecisionTreeRegressor(
+            max_depth=1,
+            min_samples_leaf=2,
+            )
         dtr.fit(X, Y)
         #print dir(dtr.tree_)
         if dtr.tree_.node_count == 1:
             # -- no split was made
-            return None
+            return leaf_rval
 
         #print dtr.tree_.node_count
         feature = dtr.tree_.feature[0]
@@ -148,235 +178,57 @@ class TreeAlgo(SuggestAlgo):
         above = self.recursive_split(tids_above, cond_above)
 
         return {
-            'hp': hps[feature],
+            'node': 'split',
+            'hp': fname,
             'thresh': threshold,
             'below': below,
             'above': above,
         }
 
-
-    def shrinking(self, label):
-        T = len(self.node_vals[label])
-        return 1.0 / (1.0 + T * self.shrink_coef)
-
-    def choose_ltv(self, label):
-        """Returns (loss, tid, val) of best/runner-up trial
-        """
-        tids = self.node_tids[label]
-        vals = self.node_vals[label]
-        losses = [self.tid_losses_dct[tid] for tid in tids]
-
-        # -- try to return the value corresponding to one of the
-        #    trials that was previously chosen
-        tid_set = set(tids)
-        for tid in self.best_tids:
-            if tid in tid_set:
-                idx = tids.index(tid)
-                rval = losses[idx], tid, vals[idx]
-                break
+    def optimize_in_model(self):
+        def tree_eval(expr, memo, ctrl):
+            def foo(node):
+                if node['node'] == 'split':
+                    for k, v in memo.items():
+                        if k.arg['label'].obj == node['hp']:
+                            if v < node['thresh']:
+                                return foo(node['below'])
+                            else:
+                                return foo(node['above'])
+                    else:
+                        raise Exception('did not find node')
+                else:
+                    assert node['node'] == 'leaf'
+                    mean = node['mean']
+                    var = node['var']
+                    # zscore is search param
+                    return UCB(mean, var, zscore = 0.7)
+            loss = foo(self.tree_)
+            return {
+                'loss': loss,
+                'status': 'ok',
+            }
+        if len(self.losses) > 0:
+            max_evals = 200
         else:
-            # -- choose a new best idx
-            ltvs = sorted(zip(losses, tids, vals))
-            best_idx = int(self.rng.geometric(1.0 / self.avg_best_idx)) - 1
-            best_idx = min(best_idx, len(ltvs) - 1)
-            assert best_idx >= 0
-            best_loss, best_tid, best_val = ltvs[best_idx]
-            self.best_tids.append(best_tid)
-            rval = best_loss, best_tid, best_val
-        return rval
+            max_evals = 1
+        # -- This algorithm (fmin) is dumb for optimizing a single tree, but
+        # reasonable for optimizing an ensemble or a tree of non-constant
+        # predictors.
+        best = fmin(
+            tree_eval,
+            space=self.domain.expr,
+            algo=self.sub_suggest,
+            max_evals=max_evals,
+            pass_expr_memo_ctrl=True,
+            )
+        return best
 
     def on_node_hyperparameter(self, memo, node, label):
-        """
-        Return a new value for one hyperparameter.
-
-        Parameters:
-        -----------
-
-        memo - a partially-filled dictionary of node -> list-of-values
-               for the nodes in a vectorized representation of the
-               original search space.
-
-        node - an Apply instance in the vectorized search space,
-               which corresponds to a hyperparameter
-
-        label - a string, the name of the hyperparameter
-
-
-        Returns: a list with one value in it: the suggested value for this
-        hyperparameter
-
-
-        Notes
-        -----
-
-        This function works by delegating to self.hp_HPTYPE functions to
-        handle each of the kinds of hyperparameters in hyperopt.pyll_utils.
-
-        Other search algorithms can implement this function without
-        delegating based on the hyperparameter type, but it's a pattern
-        I've used a few times so I show it here.
-
-        """
-        vals = self.node_vals[label]
-        if len(vals) == 0:
-            return ExprEvaluator.on_node(self, memo, node)
+        if label in self.best_pt:
+            return [self.best_pt[label]]
         else:
-            loss, tid, val = self.choose_ltv(label)
-            try:
-                handler = getattr(self, 'hp_%s' % node.name)
-            except AttributeError:
-                raise NotImplementedError('Annealing', node.name)
-            return handler(memo, node, label, tid, val)
-
-    def hp_uniform(self, memo, node, label, tid, val,
-                   log_scale=False,
-                   pass_q=False,
-                   uniform_like=uniform):
-        """
-        Return a new value for a uniform hyperparameter.
-
-        Parameters:
-        -----------
-
-        memo - (see on_node_hyperparameter)
-
-        node - (see on_node_hyperparameter)
-
-        label - (see on_node_hyperparameter)
-
-        tid - trial-identifier of the model trial on which to base a new sample
-
-        val - the value of this hyperparameter on the model trial
-
-        Returns: a list with one value in it: the suggested value for this
-        hyperparameter
-        """
-        if log_scale:
-            val = np.log(val)
-        high = memo[node.arg['high']]
-        low = memo[node.arg['low']]
-        assert low <= val <= high
-        width = (high - low) * self.shrinking(label)
-        new_high = min(high, val + width / 2)
-        if new_high == high:
-            new_low = new_high - width
-        else:
-            new_low = max(low, val - width / 2)
-            if new_low == low:
-                new_high = new_low + width
-        assert low <= new_low <= new_high <= high
-        if pass_q:
-            return uniform_like(
-                low=new_low,
-                high=new_high,
-                rng=self.rng,
-                q=memo[node.arg['q']],
-                size=memo[node.arg['size']])
-        else:
-            return uniform_like(
-                low=new_low,
-                high=new_high,
-                rng=self.rng,
-                size=memo[node.arg['size']])
-
-    def hp_quniform(self, *args, **kwargs):
-        return self.hp_uniform(
-            pass_q=True,
-            uniform_like=quniform,
-            *args,
-            **kwargs)
-
-    def hp_loguniform(self, *args, **kwargs):
-        return self.hp_uniform(
-            log_scale=True,
-            pass_q=False,
-            uniform_like=loguniform,
-            *args,
-            **kwargs)
-
-    def hp_qloguniform(self, *args, **kwargs):
-        return self.hp_uniform(
-            log_scale=True,
-            pass_q=True,
-            uniform_like=qloguniform,
-            *args,
-            **kwargs)
-
-    def hp_randint(self, memo, node, label, tid, val):
-        """
-        Parameters: See `hp_uniform`
-        """
-        upper = memo[node.arg['upper']]
-        counts = np.zeros(upper)
-        counts[val] += 1
-        prior = self.shrinking(label)
-        p = (1 - prior) * counts + prior * (1.0 / upper)
-        rval = categorical(p=p, upper=upper, rng=self.rng,
-                           size=memo[node.arg['size']])
-        return rval
-
-    def hp_categorical(self, memo, node, label, tid, val):
-        """
-        Parameters: See `hp_uniform`
-        """
-        p = p_orig = np.asarray(memo[node.arg['p']])
-        if p.ndim == 2:
-            assert len(p) == 1
-            p = p[0]
-        counts = np.zeros_like(p)
-        counts[val] += 1
-        prior = self.shrinking(label)
-        new_p = (1 - prior) * counts + prior * p
-        if p_orig.ndim == 2:
-            rval = categorical(p=[new_p], rng=self.rng,
-                               size=memo[node.arg['size']])
-        else:
-            rval = categorical(p=new_p, rng=self.rng,
-                               size=memo[node.arg['size']])
-        return rval
-
-    def hp_normal(self, memo, node, label, tid, val):
-        """
-        Parameters: See `hp_uniform`
-        """
-        return normal(
-            mu=val,
-            sigma=memo[node.arg['sigma']] * self.shrinking(label),
-            rng=self.rng,
-            size=memo[node.arg['size']])
-
-    def hp_lognormal(self, memo, node, label, tid, val):
-        """
-        Parameters: See `hp_uniform`
-        """
-        return lognormal(
-            mu=np.log(val),
-            sigma=memo[node.arg['sigma']] * self.shrinking(label),
-            rng=self.rng,
-            size=memo[node.arg['size']])
-
-    def hp_qlognormal(self, memo, node, label, tid, val):
-        """
-        Parameters: See `hp_uniform`
-        """
-        return qlognormal(
-            # -- prevent log(0) without messing up algo
-            mu=np.log(1e-16 + val),
-            sigma=memo[node.arg['sigma']] * self.shrinking(label),
-            q=memo[node.arg['q']],
-            rng=self.rng,
-            size=memo[node.arg['size']])
-
-    def hp_qnormal(self, memo, node, label, tid, val):
-        """
-        Parameters: See `hp_uniform`
-        """
-        return qnormal(
-            mu=val,
-            sigma=memo[node.arg['sigma']] * self.shrinking(label),
-            q=memo[node.arg['q']],
-            rng=self.rng,
-            size=memo[node.arg['size']])
+            return []
 
 
 @make_suggest_many_from_suggest_one
