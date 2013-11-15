@@ -40,12 +40,17 @@ from fmin import fmin
 
 logger = logging.getLogger(__name__)
 
+rng = np.random.RandomState()
+
 def EI(mean, var, thresh):
-    raise NotImplementedError()
+    # -- TODO: math for analytic form
+    samples = rng.randn(50) * np.sqrt(var) + mean
+    samples -= thresh
+    return samples[samples < 0].sum()
 
 
 def UCB(mean, var, zscore):
-    return mean + np.sqrt(var) * zscore
+    return mean - np.sqrt(var) * zscore
 
 
 class TreeAlgo(SuggestAlgo):
@@ -53,6 +58,10 @@ class TreeAlgo(SuggestAlgo):
     def __init__(self, domain, trials, seed,
                  sub_suggest=rand.suggest):
         SuggestAlgo.__init__(self, domain, trials, seed=seed)
+
+        self.random_draw_fraction = 0.25  # I think this is what SMAC does
+        self.EI_thresh_improvement = 0.1 # ??
+        self.n_EI_evals = 200  # misnomer
 
         doc_by_tid = {}
         for doc in trials.trials:
@@ -186,6 +195,8 @@ class TreeAlgo(SuggestAlgo):
         }
 
     def optimize_in_model(self):
+        # TODO: multiply EI by prior
+        # TODO: consider anneal.suggest instead of rand.suggest
         def tree_eval(expr, memo, ctrl):
             def foo(node):
                 if node['node'] == 'split':
@@ -202,16 +213,27 @@ class TreeAlgo(SuggestAlgo):
                     mean = node['mean']
                     var = node['var']
                     # zscore is search param
-                    return UCB(mean, var, zscore = 0.7)
+                    #return UCB(mean, var, zscore = 0.7)
+                    return EI(mean, var, thresh = 0.7)
             loss = foo(self.tree_)
             return {
                 'loss': loss,
                 'status': 'ok',
             }
         if len(self.losses) > 0:
-            max_evals = 200
+            if self.rng.rand() < self.random_draw_fraction:
+                # -- some of the time (e.g. 1/4) ignore our model
+                #    TODO: mark the points drawn from the prior, because they
+                #    are more useful for online [tree] model evaluation.
+                max_evals = 1
+                EI_thresh = 0 # -- irrelevant with max_evals == 1
+            else:
+                max_evals = self.n_EI_evals
+                EI_thresh = min(self.losses) - self.EI_thresh_improvement
         else:
             max_evals = 1
+            EI_thresh = 0 # -- irrelevant with max_evals == 1
+
         # -- This algorithm (fmin) is dumb for optimizing a single tree, but
         # reasonable for optimizing an ensemble or a tree of non-constant
         # predictors.
@@ -221,6 +243,7 @@ class TreeAlgo(SuggestAlgo):
             algo=self.sub_suggest,
             max_evals=max_evals,
             pass_expr_memo_ctrl=True,
+            rstate=self.rng,
             )
         return best
 
@@ -229,6 +252,46 @@ class TreeAlgo(SuggestAlgo):
             return [self.best_pt[label]]
         else:
             return []
+
+    def test_foo(self, max_evals):
+        def tree_eval(expr, memo, ctrl):
+            def foo(node):
+                if node['node'] == 'split':
+                    for k, v in memo.items():
+                        if k.arg['label'].obj == node['hp']:
+                            if v < node['thresh']:
+                                return foo(node['below'])
+                            else:
+                                return foo(node['above'])
+                    else:
+                        raise Exception('did not find node')
+                else:
+                    assert node['node'] == 'leaf'
+                    mean = node['mean']
+                    var = node['var']
+                    # zscore is search param
+                    return mean, var
+            mean, var = foo(self.tree_)
+            return {
+                'loss': mean,
+                'var': var,
+                'status': 'ok',
+            }
+        # -- This algorithm (fmin) is dumb for optimizing a single tree, but
+        # reasonable for optimizing an ensemble or a tree of non-constant
+        # predictors.
+        trials = Trials()
+        fmin(
+            tree_eval,
+            space=self.domain.expr,
+            algo=self.sub_suggest,
+            trials=trials,
+            max_evals=max_evals,
+            pass_expr_memo_ctrl=True,
+            rstate = self.rng,
+            )
+        return trials
+
 
 
 @make_suggest_many_from_suggest_one
