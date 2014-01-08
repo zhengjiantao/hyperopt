@@ -75,7 +75,10 @@ class quniform_gen(rv_discrete):
         q, low, high = map(self._args.get, ['q', 'low', 'high'])
         rval = mtrand.uniform(low=low, high=high, size=self._size)
         rval = np.round(rval / q) * q
-        return rval
+        # -- return nearest-matching elements of self._xs
+        idxs = np.searchsorted(self._xs, rval - 1e-6, 'right')
+        assert np.allclose(rval, self._xs[idxs])
+        return self._xs[idxs]
 
 
 class qloguniform_gen(rv_discrete):
@@ -123,6 +126,7 @@ class qloguniform_gen(rv_discrete):
         q, low, high = map(self._args.get, ['q', 'low', 'high'])
         x = mtrand.uniform(low=low, high=high, size=self._size)
         rval = np.round(np.exp(x) / q) * q
+        # -- return nearest-matching elements of self._xs
         idxs = np.searchsorted(self._xs, rval - 1e-6, 'right')
         assert np.allclose(rval, self._xs[idxs])
         return self._xs[idxs]
