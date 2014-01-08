@@ -8,6 +8,7 @@ __license__ = "3-clause BSD License"
 __contact__ = "github.com/jaberg/hyperopt"
 
 import logging
+import math
 
 import numpy as np
 from sklearn.tree import DecisionTreeRegressor
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 rng = np.random.RandomState()
 
-def EI(mean, var, thresh):
+def logEI(mean, var, thresh):
     # -- TODO: math for analytic form
     samples = rng.randn(50) * np.sqrt(var) + mean
     samples -= thresh
@@ -51,6 +52,86 @@ def EI(mean, var, thresh):
 
 def UCB(mean, var, zscore):
     return mean - np.sqrt(var) * zscore
+
+from tpe import normal_cdf, lognormal_cdf
+
+
+def uniform_lpdf(x, low, high):
+    return -math.log(high - low)
+
+
+def loguniform_lpdf(x, low, high):
+    assert math.exp(low) <= x <= math.exp(high)
+    return -math.log(high - low) - math.log(x)
+
+
+def uniform_cdf(x, low, high):
+    return (x - low) / (high - low)
+
+
+def loguniform_cdf(x, low, high):
+    assert math.exp(low) <= x <= math.exp(high)
+    return (math.log(x) - low) / (high - low)
+
+
+def quniform_lpdf(x, low, high, q):
+    lbound = max(low, x - q / 2.0)
+    ubound = min(high, x - q / 2.0)
+    return np.log(uniform_cdf(ubound, low, high)
+        - uniform_cdf(lbound, low, high))
+
+
+def qloguniform_lpdf(x, low, high, q):
+    assert math.exp(low) <= x <= math.exp(high)
+    lbound = max(low, x - q / 2.0)
+    ubound = min(high, x - q / 2.0)
+    return np.log(loguniform_cdf(ubound, low, high)
+        - loguniform_cdf(lbound, low, high))
+
+
+def logprior(config, memo):
+    # -- shallow copy
+    memo_cpy = dict(memo)
+    # -- for each e.g. hyperopt_param('x', uniform(0, 1)) -> 0.33
+    #    create another memo entry for uniform(0, 1) -> 0.33
+    #    This is useful because the config doesn't have the hyperopt_param nodes,
+    #    it only has the e.g. uniform(0, 1).
+    for node in memo:
+        if node.name == 'hyperopt_param':
+            memo_cpy[node.inputs()[1]] = memo[node]
+
+    def logp(apply_node):
+        val = memo_cpy[node]
+        if 'uniform' in apply_node.name:
+            low = apply_node.arg['low'].obj
+            high = apply_node.arg['high'].obj
+            if 'q' in apply_node.name:
+                q = apply_node.arg['q'].obj
+            if apply_node.name == 'uniform':
+                return uniform_lpdf(val, low, high)
+            elif apply_node.name == 'quniform':
+                return quniform_lpdf(val, low, high, q)
+            elif apply_node.name == 'loguniform':
+                return loguniform_lpdf(val, low, high)
+            elif apply_node.name == 'qloguniform':
+                return qloguniform_lpdf(val, low, high, q)
+            else:
+                raise NotImplementedError(name) 
+        elif apply_node.name == 'randint':
+            return -math.log(apply_node.arg['upper'].obj)
+        elif apply_node.name == 'lognormal':
+            return tpe.lognormal_lpdf(val, 
+                mu=apply_node.arg['mu'].obj,
+                sigma=apply_node.arg['sigma'].obj)
+        elif apply_node.name == 'qlognormal':
+            return tpe.qlognormal_lpdf(val, 
+                mu=apply_node.arg['mu'].obj,
+                sigma=apply_node.arg['sigma'].obj,
+                q=apply_node.arg['q'].obj)
+        else:
+            raise NotImplementedError(apply_node.name)
+    logs = [logp(hpvar['node']) for hpvar in config.values()]
+    return sum(logs)
 
 
 class TreeAlgo(SuggestAlgo):
@@ -86,6 +167,7 @@ class TreeAlgo(SuggestAlgo):
         config = {}
         expr_to_config(domain.expr, None, config)
         # -- conditions that activate each hyperparameter
+        self.config = config
         self.conditions = dict([(k, config[k]['conditions'])
                             for k in config])
         self.tree_ = self.recursive_split(self.tids, {})
@@ -198,14 +280,19 @@ class TreeAlgo(SuggestAlgo):
         # TODO: multiply EI by prior
         # TODO: consider anneal.suggest instead of rand.suggest
         def tree_eval(expr, memo, ctrl):
-            def foo(node):
+            assert expr is self.domain.expr
+            # -- expr is the search space expression
+            # -- memo is a hyperparameter assignment
+
+            def descend_branch(node):
+                # -- node is a node in the regression tree
                 if node['node'] == 'split':
                     for k, v in memo.items():
                         if k.arg['label'].obj == node['hp']:
                             if v < node['thresh']:
-                                return foo(node['below'])
+                                return descend_branch(node['below'])
                             else:
-                                return foo(node['above'])
+                                return descend_branch(node['above'])
                     else:
                         raise Exception('did not find node')
                 else:
@@ -213,9 +300,12 @@ class TreeAlgo(SuggestAlgo):
                     mean = node['mean']
                     var = node['var']
                     # zscore is search param
-                    #return UCB(mean, var, zscore = 0.7)
-                    return EI(mean, var, thresh = 0.7)
-            loss = foo(self.tree_)
+                    # return UCB(mean, var, zscore = 0.7)
+                    return mean, var
+            mean, var = descend_branch(self.tree_)
+            logloss = logEI(mean, var, thresh=0.7)
+            logp = logprior(self.config, memo)
+            loss = logloss + logp
             return {
                 'loss': loss,
                 'status': 'ok',
