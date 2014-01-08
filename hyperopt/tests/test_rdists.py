@@ -1,6 +1,9 @@
 import unittest
 import numpy.testing as npt
-from hyperopt.rdists import loguniform_gen
+from hyperopt.rdists import (
+    loguniform_gen,
+    quniform_gen,
+    )
 from scipy import stats
 from scipy.stats.tests.test_continuous_basic import (
     check_cdf_logcdf,
@@ -39,3 +42,10 @@ class TestLogUniform(unittest.TestCase):
                         "D = %f; pval = %f; alpha = %f; args=%s" % (
                             D, pval, alpha, arg))
 
+
+class TestQUniform(unittest.TestCase):
+    def test_rvs(self):
+        for low, high, q in [(0, 1, .1),
+                             (-20, -1, 3),]:
+            qu = quniform_gen(low, high, q)
+            print qu.rvs(size=3)
