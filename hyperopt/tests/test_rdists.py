@@ -5,6 +5,7 @@ import numpy.testing as npt
 from hyperopt.rdists import (
     loguniform_gen,
     quniform_gen,
+    qloguniform_gen,
     )
 from scipy import stats
 from scipy.stats.tests.test_continuous_basic import (
@@ -78,3 +79,18 @@ class TestQUniform(unittest.TestCase):
                 print low, high, q
                 raise
 
+
+class TestQLogUniform(unittest.TestCase):
+    def test_rvs(self):
+        for low, high, q in [(0, 1, .1),
+                             (-20, 4, 3),]:
+            qlu = qloguniform_gen(low, high, q)
+            tdb.check_ppf_ppf(qlu, ())
+            tdb.check_cdf_ppf(qlu, (), '')
+            try:
+                check_d_samples(qlu, n=10000)
+            except:
+                print low, high, q
+                raise
+
+# -- non-empty last line for flake8
