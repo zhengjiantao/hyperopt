@@ -64,6 +64,8 @@ class quniform_gen(rv_discrete):
             #print 'highmass', highmass, high, qhigh, q
             rv_discrete.__init__(self, name='quniform',
                     values=(xs, ps))
+        self._xs = np.asarray(xs)
+        self._ps = ps
 
     def rvs(self, *args, **kwargs):
         # -- skip rv base class to avoid cast to integer
@@ -75,3 +77,54 @@ class quniform_gen(rv_discrete):
         rval = np.round(rval / q) * q
         return rval
 
+
+class qloguniform_gen(rv_discrete):
+    """ Stats for Y = q * round(e^X / q) where X ~ U(low, high).
+
+    """
+
+    def __init__(self, low, high, q):
+        low, high, q = map(float, (low, high, q))
+        self._args = {
+                'low': low,
+                'high': high,
+                'q': q,
+                }
+        qlow = np.round(np.exp(low) / q) * q
+        qhigh = np.round(np.exp(high) / q) * q
+
+        lu = loguniform_gen(low=low, high=high)
+
+        xs = []
+        ps = []
+        cut_low = np.exp(low)
+        cut_high = qlow + .5 * q
+        val = qlow
+        while cut_low < qhigh:
+            xs.append(val)
+            ps.append(lu.cdf(cut_high) - lu.cdf(cut_low))
+            cut_high, cut_low = min(cut_high + q, np.exp(high)), cut_high
+            val += q
+
+        ps = np.asarray(ps)
+        ps /= ps.sum()
+        #print xs
+        #print ps
+        rv_discrete.__init__(self, name='qloguniform',
+                values=(xs, ps))
+        self._xs = np.asarray(xs)
+        self._ps = ps
+
+    def rvs(self, *args, **kwargs):
+        # -- skip rv base class to avoid cast to integer
+        return rv_generic.rvs(self, *args, **kwargs)
+
+    def _rvs(self, *args):
+        q, low, high = map(self._args.get, ['q', 'low', 'high'])
+        x = mtrand.uniform(low=low, high=high, size=self._size)
+        rval = np.round(np.exp(x) / q) * q
+        idxs = np.searchsorted(self._xs, rval - 1e-6, 'right')
+        assert np.allclose(rval, self._xs[idxs])
+        return self._xs[idxs]
+
+# -- non-empty last line for flake8
