@@ -1,4 +1,6 @@
+from collections import defaultdict
 import unittest
+import numpy as np
 import numpy.testing as npt
 from hyperopt.rdists import (
     loguniform_gen,
@@ -11,6 +13,7 @@ from scipy.stats.tests.test_continuous_basic import (
     check_pdf,
     check_cdf_ppf,
     )
+from scipy.stats.tests import test_discrete_basic as tdb
 
 
 class TestLogUniform(unittest.TestCase):
@@ -43,9 +46,35 @@ class TestLogUniform(unittest.TestCase):
                             D, pval, alpha, arg))
 
 
+def check_d_samples(dfn, n, rtol=1e-2, atol=1e-2):
+    counts = defaultdict(lambda: 0)
+    #print 'sample', dfn.rvs(size=n)
+    for s in dfn.rvs(size=n):
+        counts[s] += 1.0
+    for i, p in counts.items():
+        t = np.allclose(dfn.pmf(i), p / n, rtol=rtol, atol=atol)
+        if not t:
+            print 'Error in sampling frequencies', i
+            print 'value\tpmf\tfreq'
+            for jj in sorted(counts):
+                print ('%.2f\t%.3f\t%.3f' % (
+                    jj, dfn.pmf(jj), counts[jj] / n))
+            npt.assert_(t,
+                "n = %i; pmf = %f; p = %f" % (
+                    n, dfn.pmf(i), p / n))
+
+
+
 class TestQUniform(unittest.TestCase):
     def test_rvs(self):
         for low, high, q in [(0, 1, .1),
                              (-20, -1, 3),]:
             qu = quniform_gen(low, high, q)
-            print qu.rvs(size=3)
+            tdb.check_ppf_ppf(qu, ())
+            tdb.check_cdf_ppf(qu, (), '')
+            try:
+                check_d_samples(qu, n=10000)
+            except:
+                print low, high, q
+                raise
+
