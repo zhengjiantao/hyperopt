@@ -78,11 +78,11 @@ def logprior(config, memo):
             if apply_node.name == 'uniform':
                 return rdists.uniform_gen(a=low, b=high).logpdf(val)
             elif apply_node.name == 'quniform':
-                return rdists.quniform_gen(low=low, high=high, q=q).logpdf(val)
+                return rdists.quniform_gen(low=low, high=high, q=q).logpmf(val)
             elif apply_node.name == 'loguniform':
                 return rdists.loguniform_gen(low=low, high=high).logpdf(val)
             elif apply_node.name == 'qloguniform':
-                return rdists.qloguniform_gen(low=low, high=high, q=q).logpdf(val)
+                return rdists.qloguniform_gen(low=low, high=high, q=q).logpmf(val)
             else:
                 raise NotImplementedError(name) 
         elif 'normal' in apply_node.name:
@@ -93,11 +93,11 @@ def logprior(config, memo):
             if apply_node.name == 'normal':
                 return rdists.norm(loc=mu, scale=sigma).logpdf(val)
             elif apply_node.name == 'qnormal':
-                return rdists.qnormal_gen(mu=mu, sigma=sigma, q=q).logpdf(val)
+                return rdists.qnormal_gen(mu=mu, sigma=sigma, q=q).logpmf(val)
             elif apply_node.name == 'lognormal':
                 return rdists.lognorm_gen(mu=mu, sigma=sigma).logpdf(val)
             elif apply_node.name == 'qlognormal':
-                return rdists.qlognormal_gen(mu=mu, sigma=sigma, q=q).logpdf(val)
+                return rdists.qlognormal_gen(mu=mu, sigma=sigma, q=q).logpmf(val)
             else:
                 raise NotImplementedError(name) 
         elif apply_node.name == 'randint':
