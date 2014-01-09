@@ -6,6 +6,8 @@ from hyperopt.rdists import (
     loguniform_gen,
     quniform_gen,
     qloguniform_gen,
+    qnormal_gen,
+    qlognormal_gen,
     )
 from scipy import stats
 from scipy.stats.tests.test_continuous_basic import (
@@ -50,19 +52,20 @@ class TestLogUniform(unittest.TestCase):
 def check_d_samples(dfn, n, rtol=1e-2, atol=1e-2):
     counts = defaultdict(lambda: 0)
     #print 'sample', dfn.rvs(size=n)
+    inc = 1.0 / n
     for s in dfn.rvs(size=n):
-        counts[s] += 1.0
-    for i, p in counts.items():
-        t = np.allclose(dfn.pmf(i), p / n, rtol=rtol, atol=atol)
+        counts[s] += inc
+    for ii, p in sorted(counts.items()):
+        t = np.allclose(dfn.pmf(ii), p, rtol=rtol, atol=atol)
         if not t:
-            print 'Error in sampling frequencies', i
+            print 'Error in sampling frequencies', ii
             print 'value\tpmf\tfreq'
             for jj in sorted(counts):
-                print ('%.2f\t%.3f\t%.3f' % (
-                    jj, dfn.pmf(jj), counts[jj] / n))
+                print ('%.2f\t%.3f\t%.4f' % (
+                    jj, dfn.pmf(jj), counts[jj]))
             npt.assert_(t,
                 "n = %i; pmf = %f; p = %f" % (
-                    n, dfn.pmf(i), p / n))
+                    n, dfn.pmf(ii), p))
 
 
 
@@ -93,4 +96,31 @@ class TestQLogUniform(unittest.TestCase):
                 print low, high, q
                 raise
 
+
+class TestQNormal(unittest.TestCase):
+    def test_rvs(self):
+        for mu, sigma, q in [(0, 1, .1),
+                             (-20, 3, 3),]:
+            qn = qnormal_gen(mu, sigma, q)
+            #tdb.check_ppf_ppf(qn, ())
+            #tdb.check_cdf_ppf(qn, (), '')
+            try:
+                check_d_samples(qn, n=10000)
+            except:
+                print mu, sigma, q
+                raise
+
+
+class TestQLogNormal(unittest.TestCase):
+    def test_rvs(self):
+        for mu, sigma, q in [(0, 1, .1),
+                             (-1, 3, 3),]:
+            qn = qlognormal_gen(mu, sigma, q)
+            #tdb.check_ppf_ppf(qn, ())
+            #tdb.check_cdf_ppf(qn, (), '')
+            try:
+                check_d_samples(qn, n=10000)
+            except:
+                print mu, sigma, q
+                raise
 # -- non-empty last line for flake8
