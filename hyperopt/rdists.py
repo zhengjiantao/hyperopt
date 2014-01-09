@@ -1,5 +1,10 @@
+"""
+Extra distributions to complement scipy.stats
+
+"""
 import numpy as np
 import numpy.random as mtrand
+import scipy.stats
 from scipy.stats import rv_continuous, rv_discrete
 from scipy.stats.distributions import rv_generic
 
@@ -53,7 +58,6 @@ class quniform_gen(rv_discrete):
             assert 0 <= lowmass <= 1.0, (lowmass, low, qlow, q)
             highmass = (high - qhigh + .5 * q) / q
             assert 0 <= highmass <= 1.0, (highmass, high, qhigh, q)
-            n_possible_vals = (qhigh - qlow) / q + 1
             # -- xs: qlow to qhigh inclusive
             xs = np.arange(qlow, qhigh + .5 * q, q)
             ps = np.ones(len(xs))
@@ -96,6 +100,7 @@ class qloguniform_gen(rv_discrete):
         qlow = np.round(np.exp(low) / q) * q
         qhigh = np.round(np.exp(high) / q) * q
 
+        # -- loguniform for using the CDF
         lu = loguniform_gen(low=low, high=high)
 
         xs = []
@@ -114,7 +119,7 @@ class qloguniform_gen(rv_discrete):
         #print xs
         #print ps
         rv_discrete.__init__(self, name='qloguniform',
-                values=(xs, ps))
+                             values=(xs, ps))
         self._xs = np.asarray(xs)
         self._ps = ps
 
@@ -130,5 +135,97 @@ class qloguniform_gen(rv_discrete):
         idxs = np.searchsorted(self._xs, rval - 1e-6, 'right')
         assert np.allclose(rval, self._xs[idxs])
         return self._xs[idxs]
+
+
+class qnormal_gen(rv_discrete):
+    """Stats for Y = q * round(X / q) where X ~ N(mu, sigma)
+    """
+    def __init__(self, mu, sigma, q):
+        low, high, q = map(float, (mu, sigma, q))
+        self._args = {
+                'mu': mu,
+                'sigma': sigma,
+                'q': q,
+                }
+
+        # -- distfn for using the CDF
+        self._norm_cdf = scipy.stats.norm(loc=mu, scale=sigma).cdf
+        BIG = 1e17
+        rv_discrete.__init__(self,
+                             a=-BIG,
+                             b=BIG,
+                             name='qnormal',
+                             inc=q)
+
+    def rvs(self, *args, **kwargs):
+        # -- skip rv base class to avoid cast to integer
+        return rv_generic.rvs(self, *args, **kwargs)
+
+    def _ppf(self, x):
+        raise NotImplementedError()
+
+    def pmf(self, k, *args, **kwds):
+        loc = kwds.get('loc')
+        args, loc = self._fix_loc(args, loc)
+        k,loc = map(np.asarray,(k,loc))
+        args = tuple(map(np.asarray,args))
+        k = np.asarray((k-loc))
+        cond0 = self._argcheck(*args)
+        cond1 = (k >= self.a) & (k <= self.b) #& self._nonzero(k,*args)
+        cond = cond0 & cond1
+        output = np.zeros(np.shape(cond),'d')
+        np.place(output,(1-cond0) + np.isnan(k),self.badvalue)
+        if np.any(cond):
+            goodargs = scipy.stats.distributions.argsreduce(cond, *((k,)+args))
+            np.place(output,cond,self._pmf(*goodargs))
+        if output.ndim == 0:
+            return output[()]
+        return output
+
+    def _pmf(self, x):
+        return self._cdf(x) - self._cdf(x - self.inc)
+
+    def _cdf(self, x):
+        return self._norm_cdf(x + 0.5 * self.inc)
+
+
+    def _rvs(self, *args):
+        q, mu, sigma = map(self._args.get, ['q', 'mu', 'sigma'])
+        x = mtrand.normal(loc=mu, scale=sigma, size=self._size)
+        rval = np.round(x / q) * q
+        return rval
+
+
+class qlognormal_gen(rv_discrete):
+    """Stats for Y = q * round(exp(X) / q) where X ~ N(mu, sigma)
+    """
+    def __init__(self, mu, sigma, q):
+        low, high, q = map(float, (mu, sigma, q))
+        self._args = {
+                'mu': mu,
+                'sigma': sigma,
+                'q': q,
+                }
+
+        # -- distfn for using the CDF
+        self._norm_cdf = scipy.stats.norm(loc=mu, scale=sigma).cdf
+        BIG = 1e17
+        rv_discrete.__init__(self,
+                             a=0,
+                             b=BIG,
+                             name='qnormal',
+                             inc=q)
+
+    def rvs(self, *args, **kwargs):
+        # -- skip rv base class to avoid cast to integer
+        raise NotImplementedError()
+        return rv_generic.rvs(self, *args, **kwargs)
+
+    def _rvs(self, *args):
+        q, mu, sigma = map(self._args.get, ['q', 'mu', 'sigma'])
+        x = mtrand.normal(loc=mu, scale=sigma, size=self._size)
+        rval = np.round(x / q) * q
+        return rval
+
 
 # -- non-empty last line for flake8
