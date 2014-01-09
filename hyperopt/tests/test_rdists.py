@@ -4,6 +4,7 @@ import numpy as np
 import numpy.testing as npt
 from hyperopt.rdists import (
     loguniform_gen,
+    lognorm_gen,
     quniform_gen,
     qloguniform_gen,
     qnormal_gen,
@@ -47,6 +48,37 @@ class TestLogUniform(unittest.TestCase):
             npt.assert_(pval > alpha,
                         "D = %f; pval = %f; alpha = %f; args=%s" % (
                             D, pval, alpha, arg))
+
+
+class TestLogNormal(unittest.TestCase):
+    def test_cdf_logcdf(self):
+        check_cdf_logcdf(lognorm_gen(0, 1), (0, 1), '')
+        check_cdf_logcdf(lognorm_gen(0, 1), (-5, 5), '')
+
+    def test_cdf_ppf(self):
+        check_cdf_ppf(lognorm_gen(0, 1), (0, 1), '')
+        check_cdf_ppf(lognorm_gen(-2, 1), (-5, 5), '')
+
+    def test_pdf_logpdf(self):
+        check_pdf_logpdf(lognorm_gen(0, 1), (0, 1), '')
+        check_pdf_logpdf(lognorm_gen(mu=-4, sigma=0.5), (-2, 1), '')
+
+    def test_pdf(self):
+        check_pdf(lognorm_gen(0, 1), (0, 1), '')
+        check_pdf(lognorm_gen(mu=-4, sigma=2), (-3, 2), '')
+
+    def test_distribution_rvs(self):
+        alpha = 0.01
+        loc = 0
+        scale = 1
+        arg = (loc, scale)
+        distfn = lognorm_gen(0, 1)
+        D,pval = stats.kstest(distfn.rvs, distfn.cdf, args=arg, N=1000)
+        if (pval < alpha):
+            npt.assert_(pval > alpha,
+                        "D = %f; pval = %f; alpha = %f; args=%s" % (
+                            D, pval, alpha, arg))
+
 
 
 def check_d_samples(dfn, n, rtol=1e-2, atol=1e-2):

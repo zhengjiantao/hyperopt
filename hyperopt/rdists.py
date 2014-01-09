@@ -9,6 +9,16 @@ from scipy.stats import rv_continuous, rv_discrete
 from scipy.stats.distributions import rv_generic
 
 
+class uniform_gen(scipy.stats.distributions.uniform_gen):
+    # -- included for completeness
+    pass
+
+
+class norm_gen(scipy.stats.distributions.norm_gen):
+    # -- included for completeness
+    pass
+
+
 class loguniform_gen(rv_continuous):
     """ Stats for Y = e^X where X ~ U(low, high).
 
@@ -35,6 +45,70 @@ class loguniform_gen(rv_continuous):
 
     def _cdf(self, x):
         return (np.log(x) - self._low) / (self._high - self._low)
+
+
+# -- cut and paste from scipy.stats
+#    because the way s is passed to these functions makes it impossible
+#    to construct this class. insane
+class lognorm_gen(rv_continuous):
+    """A lognormal continuous random variable.
+
+    %(before_notes)s
+
+    Notes
+    -----
+    The probability density function for `lognorm` is::
+
+        lognorm.pdf(x, s) = 1 / (s*x*sqrt(2*pi)) * exp(-1/2*(log(x)/s)**2)
+
+    for ``x > 0``, ``s > 0``.
+
+    If log x is normally distributed with mean mu and variance sigma**2,
+    then x is log-normally distributed with shape paramter sigma and scale
+    parameter exp(mu).
+
+    %(example)s
+
+    """
+    def __init__(self, mu, sigma):
+        self.mu_ = mu
+        self.s_ = sigma
+        self.norm_ = scipy.stats.norm
+        rv_continuous.__init__(self, a=0.0, name='loguniform', shapes='s')
+
+    def _rvs(self):
+        s = self.s_
+        return np.exp(self.mu_ + s * self.norm_.rvs(size=self._size))
+
+    def _pdf(self, x):
+        s = self.s_
+        Px = np.exp(-(np.log(x) - self.mu_ ) ** 2 / (2 * s ** 2))
+        return Px / (s * x * np.sqrt(2 * np.pi))
+
+    def _cdf(self, x):
+        s = self.s_
+        return self.norm_.cdf((np.log(x) - self.mu_) / s)
+
+    def _ppf(self, q):
+        s = self.s_
+        return np.exp(s*self.norm_._ppf(q) + self.mu_)
+
+    def _stats(self):
+        if self.mu_ != 0.0:
+            raise NotImplementedError()
+        s = self.s_
+        p = np.exp(s*s)
+        mu = np.sqrt(p)
+        mu2 = p*(p-1)
+        g1 = np.sqrt((p-1))*(2+p)
+        g2 = np.polyval([1,2,3,0,-6.0],p)
+        return mu, mu2, g1, g2
+
+    def _entropy(self):
+        if self.mu_ != 0.0:
+            raise NotImplementedError()
+        s = self.s_
+        return 0.5 * (1 + np.log(2 * pi) + 2 * np.log(s))
 
 
 class rv_discrete_float(rv_discrete):

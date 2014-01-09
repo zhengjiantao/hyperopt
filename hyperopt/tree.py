@@ -38,6 +38,9 @@ from .algobase import (
 from .pyll_utils import expr_to_config, Cond
 import rand
 from fmin import fmin
+from tpe import normal_cdf, lognormal_cdf
+import rdists
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,41 +55,6 @@ def logEI(mean, var, thresh):
 
 def UCB(mean, var, zscore):
     return mean - np.sqrt(var) * zscore
-
-from tpe import normal_cdf, lognormal_cdf
-
-
-def uniform_lpdf(x, low, high):
-    return -math.log(high - low)
-
-
-def loguniform_lpdf(x, low, high):
-    assert math.exp(low) <= x <= math.exp(high)
-    return -math.log(high - low) - math.log(x)
-
-
-def uniform_cdf(x, low, high):
-    return (x - low) / (high - low)
-
-
-def loguniform_cdf(x, low, high):
-    assert math.exp(low) <= x <= math.exp(high)
-    return (math.log(x) - low) / (high - low)
-
-
-def quniform_lpdf(x, low, high, q):
-    lbound = max(low, x - q / 2.0)
-    ubound = min(high, x - q / 2.0)
-    return np.log(uniform_cdf(ubound, low, high)
-        - uniform_cdf(lbound, low, high))
-
-
-def qloguniform_lpdf(x, low, high, q):
-    assert math.exp(low) <= x <= math.exp(high)
-    lbound = max(low, x - q / 2.0)
-    ubound = min(high, x - q / 2.0)
-    return np.log(loguniform_cdf(ubound, low, high)
-        - loguniform_cdf(lbound, low, high))
 
 
 def logprior(config, memo):
@@ -108,26 +76,32 @@ def logprior(config, memo):
             if 'q' in apply_node.name:
                 q = apply_node.arg['q'].obj
             if apply_node.name == 'uniform':
-                return uniform_lpdf(val, low, high)
+                return rdists.uniform_gen(a=low, b=high).logpdf(val)
             elif apply_node.name == 'quniform':
-                return quniform_lpdf(val, low, high, q)
+                return rdists.quniform_gen(low=low, high=high, q=q).logpdf(val)
             elif apply_node.name == 'loguniform':
-                return loguniform_lpdf(val, low, high)
+                return rdists.loguniform_gen(low=low, high=high).logpdf(val)
             elif apply_node.name == 'qloguniform':
-                return qloguniform_lpdf(val, low, high, q)
+                return rdists.qloguniform_gen(low=low, high=high, q=q).logpdf(val)
+            else:
+                raise NotImplementedError(name) 
+        elif 'normal' in apply_node.name:
+            mu = apply_node.arg['mu'].obj
+            sigma = apply_node.arg['sigma'].obj
+            if 'q' in apply_node.name:
+                q = apply_node.arg['q'].obj
+            if apply_node.name == 'normal':
+                return rdists.norm(loc=mu, scale=sigma).logpdf(val)
+            elif apply_node.name == 'qnormal':
+                return rdists.qnormal_gen(mu=mu, sigma=sigma, q=q).logpdf(val)
+            elif apply_node.name == 'lognormal':
+                return rdists.lognorm_gen(mu=mu, sigma=sigma).logpdf(val)
+            elif apply_node.name == 'qlognormal':
+                return rdists.qlognormal_gen(mu=mu, sigma=sigma, q=q).logpdf(val)
             else:
                 raise NotImplementedError(name) 
         elif apply_node.name == 'randint':
             return -math.log(apply_node.arg['upper'].obj)
-        elif apply_node.name == 'lognormal':
-            return tpe.lognormal_lpdf(val, 
-                mu=apply_node.arg['mu'].obj,
-                sigma=apply_node.arg['sigma'].obj)
-        elif apply_node.name == 'qlognormal':
-            return tpe.qlognormal_lpdf(val, 
-                mu=apply_node.arg['mu'].obj,
-                sigma=apply_node.arg['sigma'].obj,
-                q=apply_node.arg['q'].obj)
         else:
             raise NotImplementedError(apply_node.name)
     logs = [logp(hpvar['node']) for hpvar in config.values()]
