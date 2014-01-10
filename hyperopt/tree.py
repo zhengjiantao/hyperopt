@@ -14,6 +14,7 @@ import numpy as np
 from sklearn.tree import DecisionTreeRegressor
 
 
+import pyll
 from pyll.stochastic import (
     # -- integer
     categorical,
@@ -33,12 +34,11 @@ from .base import miscs_to_idxs_vals, Trials
 from .algobase import (
     SuggestAlgo,
     ExprEvaluator,
-    make_suggest_many_from_suggest_one,
     )
 from .pyll_utils import expr_to_config, Cond
 import rand
 from fmin import fmin
-from tpe import normal_cdf, lognormal_cdf
+import scipy.stats
 import rdists
 
 
@@ -69,7 +69,10 @@ def logprior(config, memo):
             memo_cpy[node.inputs()[1]] = memo[node]
 
     def logp(apply_node):
-        val = memo_cpy[node]
+        val = memo_cpy[apply_node]
+        if val is pyll.base.GarbageCollected:
+            # -- XXX: confirm this happens because the hyperparam is unused.
+            return 0
         if 'uniform' in apply_node.name:
             low = apply_node.arg['low'].obj
             high = apply_node.arg['high'].obj
@@ -91,7 +94,7 @@ def logprior(config, memo):
             if 'q' in apply_node.name:
                 q = apply_node.arg['q'].obj
             if apply_node.name == 'normal':
-                return rdists.norm(loc=mu, scale=sigma).logpdf(val)
+                return scipy.stats.norm(loc=mu, scale=sigma).logpdf(val)
             elif apply_node.name == 'qnormal':
                 return rdists.qnormal_gen(mu=mu, sigma=sigma, q=q).logpmf(val)
             elif apply_node.name == 'lognormal':
@@ -102,6 +105,10 @@ def logprior(config, memo):
                 raise NotImplementedError(name) 
         elif apply_node.name == 'randint':
             return -math.log(apply_node.arg['upper'].obj)
+        elif apply_node.name == 'categorical':
+            assert val == int(val), val
+            p = pyll.rec_eval(apply_node.arg['p'])
+            return math.log(p[int(val)])
         else:
             raise NotImplementedError(apply_node.name)
     logs = [logp(hpvar['node']) for hpvar in config.values()]
@@ -109,7 +116,6 @@ def logprior(config, memo):
 
 
 class TreeAlgo(SuggestAlgo):
-
     def __init__(self, domain, trials, seed,
                  sub_suggest=rand.suggest):
         SuggestAlgo.__init__(self, domain, trials, seed=seed)
@@ -357,8 +363,6 @@ class TreeAlgo(SuggestAlgo):
         return trials
 
 
-
-@make_suggest_many_from_suggest_one
 def suggest(new_ids, domain, trials, seed, *args, **kwargs):
     new_id, = new_ids
     return TreeAlgo(domain, trials, seed, *args, **kwargs)(new_id)

@@ -5,12 +5,12 @@ from hyperopt import tree
 from hyperopt import rand
 from hyperopt import Trials, fmin
 
-from test_bandits import CasePerBandit
+from test_domains import CasePerDomain
 
 def passthrough(x):
     return x
 
-class TestItJustRuns(unittest.TestCase, CasePerBandit):
+class TestItJustRuns(unittest.TestCase, CasePerDomain):
     def work(self):
         trials = Trials()
         space = self.bandit.expr
@@ -36,6 +36,7 @@ def test_distractor():
         algo=tree.suggest,
         rstate=np.random.RandomState(125),
         max_evals=75)
+    raise NotImplementedError('skipping matplotlib')
     import matplotlib.pyplot as plt
     Xs = [t['misc']['vals']['x'][0] for t in trials.trials]
     Ys = [t['result']['loss'] for t in trials.trials]
@@ -56,8 +57,7 @@ def test_distractor():
     plt.show()
 
 
-
-class TestItAtLeastSortOfWorks(unittest.TestCase, CasePerBandit):
+class TestItAtLeastSortOfWorks(unittest.TestCase, CasePerDomain):
     thresholds = dict(
             quadratic1=1e-5,
             q1_lognormal=0.01,
@@ -128,7 +128,7 @@ class TestItAtLeastSortOfWorks(unittest.TestCase, CasePerBandit):
                     bins=20)
 
         #print trials.losses()
-        print 'ANNEAL BEST 6:', list(sorted(trials.losses()))[:6]
+        print 'OPT BEST 6:', list(sorted(trials.losses()))[:6]
         #logx = np.log([s['x'] for s in trials.specs])
         #print 'TPE MEAN', np.mean(logx)
         #print 'TPE STD ', np.std(logx)
@@ -137,3 +137,4 @@ class TestItAtLeastSortOfWorks(unittest.TestCase, CasePerBandit):
         assert min(trials.losses()) < thresh
 
 
+# -- eof for flake8
