@@ -36,7 +36,6 @@ def test_distractor():
         algo=tree.suggest,
         rstate=np.random.RandomState(125),
         max_evals=75)
-    raise NotImplementedError('skipping matplotlib')
     import matplotlib.pyplot as plt
     Xs = [t['misc']['vals']['x'][0] for t in trials.trials]
     Ys = [t['result']['loss'] for t in trials.trials]

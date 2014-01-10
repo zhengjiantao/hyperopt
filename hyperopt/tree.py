@@ -33,28 +33,13 @@ from pyll.stochastic import (
 from .base import miscs_to_idxs_vals, Trials
 from .algobase import (
     SuggestAlgo,
-    ExprEvaluator,
     )
 from .pyll_utils import expr_to_config, Cond
 import rand
 from fmin import fmin
 import scipy.stats
 import rdists
-
-
-logger = logging.getLogger(__name__)
-
-rng = np.random.RandomState()
-
-def logEI(mean, var, thresh):
-    # -- TODO: math for analytic form
-    samples = rng.randn(50) * np.sqrt(var) + mean
-    samples -= thresh
-    return samples[samples < 0].sum()
-
-
-def UCB(mean, var, zscore):
-    return mean - np.sqrt(var) * zscore
+import criteria
 
 
 def logprior(config, memo):
@@ -283,7 +268,7 @@ class TreeAlgo(SuggestAlgo):
                     # return UCB(mean, var, zscore = 0.7)
                     return mean, var
             mean, var = descend_branch(self.tree_)
-            logloss = logEI(mean, var, thresh=0.7)
+            logloss = -criteria.neglogEI(mean, var, thresh=0.7)
             logp = logprior(self.config, memo)
             loss = logloss + logp
             return {
