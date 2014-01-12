@@ -33,26 +33,16 @@ def test_distractor():
     fmin(fn=lambda x: x,
         space=distractor().expr,
         trials=trials,
-        algo=tree.suggest,
+        algo=partial(
+            tree.suggest,
+            #sub_suggest=rand.suggest,
+            n_trees=1), # XXX
         rstate=np.random.RandomState(125),
-        max_evals=75)
+        max_evals=50)
     import matplotlib.pyplot as plt
     Xs = [t['misc']['vals']['x'][0] for t in trials.trials]
     Ys = [t['result']['loss'] for t in trials.trials]
     plt.scatter(Xs, Ys, c='b')
-
-    ta = tree.TreeAlgo(distractor(), trials, 123)
-    rtrials = ta.test_foo(50)
-    Xs = [t['misc']['vals']['x'][0] for t in rtrials.trials]
-    Ys = [t['result']['loss'] for t in rtrials.trials]
-    Vs = [np.sqrt(t['result']['var']) for t in rtrials.trials]
-    print 'n Xs', len(Xs)
-    print 'X range', min(Xs), max(Xs)
-    print 'Y range', min(Ys), max(Ys)
-    print 'vars', Vs
-    XYV = sorted(zip(Xs, Ys, Vs))
-    Xs, Ys, Vs = zip(*XYV)
-    plt.errorbar(Xs, Ys, yerr=Vs)
     plt.show()
 
 
