@@ -42,6 +42,13 @@ import rdists
 import criteria
 
 
+def sample_w_replacement(lst, n, rng):
+    if len(lst):
+        return np.take(lst, rng.randint(0, len(lst), size=n))
+    else:
+        return list(lst)
+
+
 def logprior(config, memo):
     # -- shallow copy
     memo_cpy = dict(memo)
@@ -101,14 +108,15 @@ def logprior(config, memo):
 
 
 class TreeAlgo(SuggestAlgo):
+
     def __init__(self, domain, trials, seed,
-                 sub_suggest=rand.suggest):
+                 n_trees,
+                 min_samples_leaf):
         SuggestAlgo.__init__(self, domain, trials, seed=seed)
 
         self.random_draw_fraction = 0.25  # I think this is what SMAC does
-        self.EI_thresh_improvement = 0.1 # ??
-        self.n_EI_evals = 200  # misnomer
 
+        # -- extract the information we need from the trials object
         doc_by_tid = {}
         for doc in trials.trials:
             tid = doc['tid']
@@ -127,19 +135,52 @@ class TreeAlgo(SuggestAlgo):
             [d['misc'] for (tid, (d, l)) in self.tid_docs_losses],
             keys=domain.params.keys())
         self.best_tids = []
-        self.sub_suggest = sub_suggest
 
+        # -- use expr_to_config to build dependency graph that tells
+        #    us which hyperparams depend on which others
         config = {}
         expr_to_config(domain.expr, None, config)
-        # -- conditions that activate each hyperparameter
         self.config = config
         self.conditions = dict([(k, config[k]['conditions'])
                             for k in config])
-        self.tree_ = self.recursive_split(self.tids, {})
-        self.best_pt = self.optimize_in_model()
+
+        # -- build some predictive models of the response surface
+        # XXX: init conditions w all discrete hyperparams that happen
+        #      to all equal the same value.
+        self.min_samples_leaf = min_samples_leaf
+        self.trees = [self.recursive_split(sample_w_replacement(self.tids,
+                                                                len(self.tids),
+                                                                self.rng),
+                                           conditions={})
+                      for ii in range(n_trees)]
+
+    def on_node_hyperparameter(self, memo, node, label):
+        if label in self.best_pt:
+            return [self.best_pt[label]]
+        else:
+            return []
+
+    def leaf_node(self, hps, tids, conditions, Y, X):
+        if len(tids) < 2:
+            return {
+                'node': 'leaf',
+                'mean': 0,
+                'var': 1,
+                'n': len(tids)}
+        else:
+            return {
+                'node': 'leaf',
+                'mean': Y.mean(),
+                'var': Y.var(),
+                'n': len(Y)}
+
+    def leaf_node_logEI(self, leaf, memo, thresh):
+        # -- negate because EI is improvement *over* thresh, but
+        #    fmin is set up for minimization
+        return criteria.logEI(-leaf['mean'], leaf['var'], -thresh)
 
     def recursive_split(self, tids, conditions):
-        """
+        """Return subtree or leaf node to handle `tids`
 
         Paramater
         ---------
@@ -158,31 +199,27 @@ class TreeAlgo(SuggestAlgo):
                 else:
                     return False
             return True
-        if len(tids) < 2:
-            return {
-                'node': 'leaf',
-                'mean': 0,
-                'var': 1,
-                'n': len(tids)}
 
         Y = np.empty((len(tids),))
         for ii, tid in enumerate(tids):
             Y[ii] = self.losses[list(self.tids).index(tid)]
 
-        leaf_rval = {
-            'node': 'leaf',
-            'mean': Y.mean(),
-            'var': Y.var(),
-            'n': len(Y)}
+        # -- prepare a model for use in case we don't need to split
+        #    tids with another node.
 
-        #print 'CONDITIONS:', conditions
-        #print 'CRITERIA:', self.conditions
         hps = [k for k, criteria in sorted(self.conditions.items())
                if any(map(satisfied, criteria))]
-        #print 'SPLITTABLE:', hps
-        if not hps:
-            return leaf_rval
+        if not hps or len(Y) < 2:
+            return self.leaf_node(hps, tids, conditions, Y, X=None)
 
+        # TODO: consider limiting the number of features available
+        #       in order to be more like random forests.
+        #
+        #       One reason not to do it though, is that random forests
+        #       that use this technique are meant to be much bigger
+        #       than the e.g. 10 trees typically fit by TreeAlgo.
+        #
+        #       We are already randomizing the dataset by bootstrap.
         X = np.empty((len(tids), len(hps)))
         node_vals = self.node_vals
         node_tids = self.node_tids
@@ -194,13 +231,13 @@ class TreeAlgo(SuggestAlgo):
         #print X
         dtr = DecisionTreeRegressor(
             max_depth=1,
-            min_samples_leaf=2,
+            min_samples_leaf=self.min_samples_leaf,
             )
         dtr.fit(X, Y)
         #print dir(dtr.tree_)
         if dtr.tree_.node_count == 1:
             # -- no split was made
-            return leaf_rval
+            return self.leaf_node(hps, tids, conditions, Y, X)
 
         #print dtr.tree_.node_count
         feature = dtr.tree_.feature[0]
@@ -241,10 +278,18 @@ class TreeAlgo(SuggestAlgo):
             'above': above,
         }
 
-    def optimize_in_model(self):
-        # TODO: multiply EI by prior
-        # TODO: consider anneal.suggest instead of rand.suggest
-        def tree_eval(expr, memo, ctrl):
+    def optimize_in_model(self, max_evals,
+                          sub_suggest,
+                          thresh_epsilon,
+                          logprior_strength):
+        """
+        Parameters
+        ----------
+        sub_suggest : algo for fmin call to optimize in surrogate
+        max_evals : max_evals for fmin call to optimize surrogate
+        thresh_epsilon : optimize EI better than (min(losses) - epsilon)
+        """
+        def trees_logEI(expr, memo, ctrl):
             assert expr is self.domain.expr
             # -- expr is the search space expression
             # -- memo is a hyperparameter assignment
@@ -262,53 +307,43 @@ class TreeAlgo(SuggestAlgo):
                         raise Exception('did not find node')
                 else:
                     assert node['node'] == 'leaf'
-                    mean = node['mean']
-                    var = node['var']
-                    # zscore is search param
-                    # return UCB(mean, var, zscore = 0.7)
-                    return mean, var
-            mean, var = descend_branch(self.tree_)
-            logloss = -criteria.neglogEI(mean, var, thresh=0.7)
+                    return self.leaf_node_logEI(node, memo, EI_thresh)
+            logEIs = [descend_branch(tree) for tree in self.trees]
+            # XXX is sign on this right?
             logp = logprior(self.config, memo)
-            loss = logloss + logp
+            loss = len(self.tids) * np.mean(logEIs) + logprior_strength * logp
             return {
-                'loss': loss,
+                'loss': -loss, # -- improvements are (+) and we're minimizing
                 'status': 'ok',
             }
         if len(self.losses) > 0:
-            if self.rng.rand() < self.random_draw_fraction:
-                # -- some of the time (e.g. 1/4) ignore our model
+            ignore_surrogate = self.rng.rand() < self.random_draw_fraction
+            if ignore_surrogate:
                 #    TODO: mark the points drawn from the prior, because they
                 #    are more useful for online [tree] model evaluation.
+                #    and they provide unbiased estimates of Y mean and var
+                #    over search space.
                 max_evals = 1
                 EI_thresh = 0 # -- irrelevant with max_evals == 1
             else:
-                max_evals = self.n_EI_evals
-                EI_thresh = min(self.losses) - self.EI_thresh_improvement
+                EI_thresh = min(self.losses) - thresh_epsilon
         else:
             max_evals = 1
             EI_thresh = 0 # -- irrelevant with max_evals == 1
 
-        # -- This algorithm (fmin) is dumb for optimizing a single tree, but
-        # reasonable for optimizing an ensemble or a tree of non-constant
-        # predictors.
         best = fmin(
-            tree_eval,
+            trees_logEI,
             space=self.domain.expr,
-            algo=self.sub_suggest,
+            algo=sub_suggest,
             max_evals=max_evals,
             pass_expr_memo_ctrl=True,
             rstate=self.rng,
             )
+
+        self.best_pt = best
         return best
 
-    def on_node_hyperparameter(self, memo, node, label):
-        if label in self.best_pt:
-            return [self.best_pt[label]]
-        else:
-            return []
-
-    def test_foo(self, max_evals):
+    def test_foo(self, max_evals, sub_suggest):
         def tree_eval(expr, memo, ctrl):
             def foo(node):
                 if node['node'] == 'split':
@@ -339,7 +374,7 @@ class TreeAlgo(SuggestAlgo):
         fmin(
             tree_eval,
             space=self.domain.expr,
-            algo=self.sub_suggest,
+            algo=sub_suggest,
             trials=trials,
             max_evals=max_evals,
             pass_expr_memo_ctrl=True,
@@ -348,8 +383,24 @@ class TreeAlgo(SuggestAlgo):
         return trials
 
 
-def suggest(new_ids, domain, trials, seed, *args, **kwargs):
+def suggest(new_ids, domain, trials, seed,
+        n_optimize_in_model_calls=200,
+        thresh_epsilon=0.1, # XXX really need better default :/
+        n_trees=10,
+        sub_suggest=rand.suggest,
+        # XXX check bugs on hyperopt before using anneal, then use anneal
+        # XXX make sure the bug discovered during chat w Alex Lacoste is fixed!
+        ):
     new_id, = new_ids
-    return TreeAlgo(domain, trials, seed, *args, **kwargs)(new_id)
+    tree_algo = TreeAlgo(domain, trials, seed,
+            n_trees=n_trees,
+            min_samples_leaf=2,
+            )
+    tree_algo.optimize_in_model(
+            max_evals=n_optimize_in_model_calls,
+            sub_suggest=sub_suggest,
+            thresh_epsilon=thresh_epsilon,
+            logprior_strength=5.0)
+    return tree_algo(new_id)
 
 # -- flake-8 abhors blank line EOF

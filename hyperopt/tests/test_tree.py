@@ -10,7 +10,7 @@ from test_domains import CasePerDomain
 def passthrough(x):
     return x
 
-class TestItJustRuns(unittest.TestCase, CasePerDomain):
+class TestSmoke(unittest.TestCase, CasePerDomain):
     def work(self):
         trials = Trials()
         space = self.bandit.expr
@@ -56,7 +56,7 @@ def test_distractor():
     plt.show()
 
 
-class TestItAtLeastSortOfWorks(unittest.TestCase, CasePerDomain):
+class TestAcc(unittest.TestCase, CasePerDomain):
     thresholds = dict(
             quadratic1=1e-5,
             q1_lognormal=0.01,
