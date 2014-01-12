@@ -9,6 +9,7 @@ __contact__ = "github.com/jaberg/hyperopt"
 
 import logging
 import math
+import time
 
 import numpy as np
 from sklearn.tree import DecisionTreeRegressor
@@ -114,7 +115,6 @@ class TreeAlgo(SuggestAlgo):
                  min_samples_leaf):
         SuggestAlgo.__init__(self, domain, trials, seed=seed)
 
-        self.random_draw_fraction = 0.25  # I think this is what SMAC does
 
         # -- extract the information we need from the trials object
         doc_by_tid = {}
@@ -148,11 +148,14 @@ class TreeAlgo(SuggestAlgo):
         # XXX: init conditions w all discrete hyperparams that happen
         #      to all equal the same value.
         self.min_samples_leaf = min_samples_leaf
+        t0 = time.time()
         self.trees = [self.recursive_split(sample_w_replacement(self.tids,
                                                                 len(self.tids),
                                                                 self.rng),
                                            conditions={})
                       for ii in range(n_trees)]
+        t1 = time.time()
+        print 'building trees took %f seconds' % (t1 - t0)
 
     def on_node_hyperparameter(self, memo, node, label):
         if label in self.best_pt:
@@ -164,14 +167,14 @@ class TreeAlgo(SuggestAlgo):
         if len(tids) < 2:
             return {
                 'node': 'leaf',
-                'mean': 0,
-                'var': 1,
+                'mean': 0.0,
+                'var': 1.0,
                 'n': len(tids)}
         else:
             return {
                 'node': 'leaf',
                 'mean': Y.mean(),
-                'var': Y.var(),
+                'var': Y.var() + 1e-6,
                 'n': len(Y)}
 
     def leaf_node_logEI(self, leaf, memo, thresh):
@@ -281,7 +284,8 @@ class TreeAlgo(SuggestAlgo):
     def optimize_in_model(self, max_evals,
                           sub_suggest,
                           thresh_epsilon,
-                          logprior_strength):
+                          logprior_strength,
+                          random_draw_fraction):
         """
         Parameters
         ----------
@@ -317,7 +321,7 @@ class TreeAlgo(SuggestAlgo):
                 'status': 'ok',
             }
         if len(self.losses) > 0:
-            ignore_surrogate = self.rng.rand() < self.random_draw_fraction
+            ignore_surrogate = self.rng.rand() < random_draw_fraction
             if ignore_surrogate:
                 #    TODO: mark the points drawn from the prior, because they
                 #    are more useful for online [tree] model evaluation.
@@ -331,6 +335,7 @@ class TreeAlgo(SuggestAlgo):
             max_evals = 1
             EI_thresh = 0 # -- irrelevant with max_evals == 1
 
+        t0 = time.time()
         best = fmin(
             trees_logEI,
             space=self.domain.expr,
@@ -339,6 +344,8 @@ class TreeAlgo(SuggestAlgo):
             pass_expr_memo_ctrl=True,
             rstate=self.rng,
             )
+        t1 = time.time()
+        print 'optimizing surrogate took %f' % (t1 - t0)
 
         self.best_pt = best
         return best
@@ -400,6 +407,7 @@ def suggest(new_ids, domain, trials, seed,
             max_evals=n_optimize_in_model_calls,
             sub_suggest=sub_suggest,
             thresh_epsilon=thresh_epsilon,
+            random_draw_fraction=0.25  # SMAC sets this at 0.25
             logprior_strength=5.0)
     return tree_algo(new_id)
 
