@@ -7,7 +7,6 @@ __authors__ = "James Bergstra"
 __license__ = "3-clause BSD License"
 __contact__ = "github.com/jaberg/hyperopt"
 
-import logging
 import math
 import time
 
@@ -73,32 +72,38 @@ def logprior(config, memo):
             if 'q' in apply_node.name:
                 q = apply_node.arg['q'].obj
             if apply_node.name == 'uniform':
-                return rdists.uniform_gen(a=low, b=high).logpdf(val,
-                                                       loc=low,
-                                                       scale=(high - low))
+                return rdists.uniform_gen(a=low, b=high).logpdf(
+                    val, loc=low, scale=(high - low))
             elif apply_node.name == 'quniform':
-                return rdists.quniform_gen(low=low, high=high, q=q).logpmf(val)
+                return rdists.quniform_gen(
+                    low=low, high=high, q=q).logpmf(val)
             elif apply_node.name == 'loguniform':
-                return rdists.loguniform_gen(low=low, high=high).logpdf(val)
+                return rdists.loguniform_gen(
+                    low=low, high=high).logpdf(val)
             elif apply_node.name == 'qloguniform':
-                return rdists.qloguniform_gen(low=low, high=high, q=q).logpmf(val)
+                return rdists.qloguniform_gen(
+                    low=low, high=high, q=q).logpmf(val)
             else:
-                raise NotImplementedError(name) 
+                raise NotImplementedError(apply_node.name) 
         elif 'normal' in apply_node.name:
             mu = apply_node.arg['mu'].obj
             sigma = apply_node.arg['sigma'].obj
             if 'q' in apply_node.name:
                 q = apply_node.arg['q'].obj
             if apply_node.name == 'normal':
-                return scipy.stats.norm(loc=mu, scale=sigma).logpdf(val)
+                return scipy.stats.norm(
+                    loc=mu, scale=sigma).logpdf(val)
             elif apply_node.name == 'qnormal':
-                return rdists.qnormal_gen(mu=mu, sigma=sigma, q=q).logpmf(val)
+                return rdists.qnormal_gen(
+                    mu=mu, sigma=sigma, q=q).logpmf(val)
             elif apply_node.name == 'lognormal':
-                return rdists.lognorm_gen(mu=mu, sigma=sigma).logpdf(val)
+                return rdists.lognorm_gen(
+                    mu=mu, sigma=sigma).logpdf(val)
             elif apply_node.name == 'qlognormal':
-                return rdists.qlognormal_gen(mu=mu, sigma=sigma, q=q).logpmf(val)
+                return rdists.qlognormal_gen(
+                    mu=mu, sigma=sigma, q=q).logpmf(val)
             else:
-                raise NotImplementedError(name) 
+                raise NotImplementedError(apply_node.name) 
         elif apply_node.name == 'randint':
             return -math.log(apply_node.arg['upper'].obj)
         elif apply_node.name == 'categorical':
