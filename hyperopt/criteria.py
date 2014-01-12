@@ -20,20 +20,21 @@ def EI(mean, var, thresh):
     return sigma * (score * n.cdf(score) + n.pdf(score))
 
 
-def neglogEI(mean, var, thresh):
-    """Return -log(EI(mean, var, thresh))
+def logEI(mean, var, thresh):
+    """Return log(EI(mean, var, thresh))
 
-    This formula avoids underflow for thresh >= mean + 37 * sqrt(var)
+    This formula avoids underflow in cdf for
+        thresh >= mean + 37 * sqrt(var)
     """
     sigma = np.sqrt(var)
     score = (mean - thresh) / sigma
     n = scipy.stats.norm
     if score < 0:
         pdf = n.logpdf(score)
-        r = np.exp(n.logcdf(score) - pdf)
-        return -np.log(sigma) - pdf - np.log1p(score * r)
+        r = np.exp(np.log(-score) + n.logcdf(score) - pdf)
+        return np.log(sigma) + pdf + np.log1p(-r)
     else:
-        return - np.log(sigma) - np.log(score * n.cdf(score) + n.pdf(score))
+        return np.log(sigma) + np.log(score * n.cdf(score) + n.pdf(score))
 
 
 def UCB(mean, var, zscore):

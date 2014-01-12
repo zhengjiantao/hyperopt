@@ -23,15 +23,15 @@ def test_ei():
             #mean, var, thresh, v_n, v_a)
 
 
-def test_neglog_ei():
+def test_log_ei():
     for mean, var in [(0, 1), (-4, 9)]:
         thresholds = np.arange(-5, 30, .25) * np.sqrt(var) + mean
 
         ei = np.asarray(
             [crit.EI(mean, var, thresh) for thresh in thresholds])
         nlei = np.asarray(
-            [crit.neglogEI(mean, var, thresh) for thresh in thresholds])
-        naive = -np.log(ei)
+            [crit.logEI(mean, var, thresh) for thresh in thresholds])
+        naive = np.log(ei)
         #import matplotlib.pyplot as plt
         #plt.plot(thresholds, ei, label='ei')
         #plt.plot(thresholds, nlei, label='nlei')
@@ -43,10 +43,10 @@ def test_neglog_ei():
         assert np.allclose(nlei, naive)
 
 
-def test_neglog_ei_range():
+def test_log_ei_range():
     assert np.all(
         np.isfinite(
-            [crit.neglogEI(0, 1, thresh)
+            [crit.logEI(0, 1, thresh)
              for thresh in [-500, 0, 50, 100, 500, 5000]]))
 
 # -- flake8
