@@ -87,6 +87,10 @@ class TestAcc(unittest.TestCase, CasePerDomain):
         assert bandit.name is not None
         algo = partial(
             tree.suggest,
+            # XXX (begin)
+            n_trees=10,
+            logprior_strength=1.0,
+            # XXX (end)
                 )
         LEN = self.LEN.get(bandit.name, 50)
 

@@ -37,6 +37,7 @@ from .algobase import (
     )
 from .pyll_utils import expr_to_config, Cond
 import rand
+import anneal
 from fmin import fmin
 import scipy.stats
 import rdists
@@ -72,7 +73,9 @@ def logprior(config, memo):
             if 'q' in apply_node.name:
                 q = apply_node.arg['q'].obj
             if apply_node.name == 'uniform':
-                return rdists.uniform_gen(a=low, b=high).logpdf(val)
+                return rdists.uniform_gen(a=low, b=high).logpdf(val,
+                                                       loc=low,
+                                                       scale=(high - low))
             elif apply_node.name == 'quniform':
                 return rdists.quniform_gen(low=low, high=high, q=q).logpmf(val)
             elif apply_node.name == 'loguniform':
@@ -315,7 +318,13 @@ class TreeAlgo(SuggestAlgo):
             logEIs = [descend_branch(tree) for tree in self.trees]
             # XXX is sign on this right?
             logp = logprior(self.config, memo)
-            loss = len(self.tids) * np.mean(logEIs) + logprior_strength * logp
+            weighted_logp = logprior_strength * logp
+            weighted_logEImean = len(self.tids) * np.mean(logEIs)
+
+            #loss = weighted_logEImean + weighted_logp
+            loss = np.mean(logEIs)
+            #print np.mean(logEIs)
+
             return {
                 'loss': -loss, # -- improvements are (+) and we're minimizing
                 'status': 'ok',
@@ -336,6 +345,17 @@ class TreeAlgo(SuggestAlgo):
             EI_thresh = 0 # -- irrelevant with max_evals == 1
 
         t0 = time.time()
+        rnd_trials = Trials()
+        rnd_best = fmin(
+            trees_logEI,
+            space=self.domain.expr,
+            algo=rand.suggest,
+            max_evals=max_evals,
+            pass_expr_memo_ctrl=True,
+            rstate=self.rng,
+            trials=rnd_trials,
+            )
+        tmp_trials = Trials()
         best = fmin(
             trees_logEI,
             space=self.domain.expr,
@@ -343,60 +363,24 @@ class TreeAlgo(SuggestAlgo):
             max_evals=max_evals,
             pass_expr_memo_ctrl=True,
             rstate=self.rng,
+            trials=tmp_trials,
             )
         t1 = time.time()
-        print 'optimizing surrogate took %f' % (t1 - t0)
+        if max_evals > 1:
+            print 'optimizing surrogate took %f' % (t1 - t0)
+            print 'RND', sorted(rnd_trials.losses())[:5]
+            print 'ANN', sorted(tmp_trials.losses())[:5]
 
         self.best_pt = best
         return best
 
-    def test_foo(self, max_evals, sub_suggest):
-        def tree_eval(expr, memo, ctrl):
-            def foo(node):
-                if node['node'] == 'split':
-                    for k, v in memo.items():
-                        if k.arg['label'].obj == node['hp']:
-                            if v < node['thresh']:
-                                return foo(node['below'])
-                            else:
-                                return foo(node['above'])
-                    else:
-                        raise Exception('did not find node')
-                else:
-                    assert node['node'] == 'leaf'
-                    mean = node['mean']
-                    var = node['var']
-                    # zscore is search param
-                    return mean, var
-            mean, var = foo(self.tree_)
-            return {
-                'loss': mean,
-                'var': var,
-                'status': 'ok',
-            }
-        # -- This algorithm (fmin) is dumb for optimizing a single tree, but
-        # reasonable for optimizing an ensemble or a tree of non-constant
-        # predictors.
-        trials = Trials()
-        fmin(
-            tree_eval,
-            space=self.domain.expr,
-            algo=sub_suggest,
-            trials=trials,
-            max_evals=max_evals,
-            pass_expr_memo_ctrl=True,
-            rstate = self.rng,
-            )
-        return trials
-
 
 def suggest(new_ids, domain, trials, seed,
-        n_optimize_in_model_calls=200,
+        n_optimize_in_model_calls=50,
         thresh_epsilon=0.1, # XXX really need better default :/
         n_trees=10,
-        sub_suggest=rand.suggest,
-        # XXX check bugs on hyperopt before using anneal, then use anneal
-        # XXX make sure the bug discovered during chat w Alex Lacoste is fixed!
+        sub_suggest=anneal.suggest,
+        logprior_strength=5.0,
         ):
     new_id, = new_ids
     tree_algo = TreeAlgo(domain, trials, seed,
@@ -407,8 +391,8 @@ def suggest(new_ids, domain, trials, seed,
             max_evals=n_optimize_in_model_calls,
             sub_suggest=sub_suggest,
             thresh_epsilon=thresh_epsilon,
-            random_draw_fraction=0.25  # SMAC sets this at 0.25
-            logprior_strength=5.0)
+            random_draw_fraction=0.25,  # SMAC sets this at 0.25
+            logprior_strength=logprior_strength)
     return tree_algo(new_id)
 
 # -- flake-8 abhors blank line EOF
