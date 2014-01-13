@@ -35,10 +35,12 @@ def test_distractor():
         trials=trials,
         algo=partial(
             tree.suggest,
-            #sub_suggest=rand.suggest,
-            n_trees=1), # XXX
+            #sub_suggest=anneal.suggest,
+            #n_trees=10,
+            plot_contours=True,
+            ),
         rstate=np.random.RandomState(125),
-        max_evals=50)
+        max_evals=100)
     import matplotlib.pyplot as plt
     Xs = [t['misc']['vals']['x'][0] for t in trials.trials]
     Ys = [t['result']['loss'] for t in trials.trials]
@@ -82,7 +84,7 @@ class TestAcc(unittest.TestCase, CasePerDomain):
             logprior_strength=1.0,
             # XXX (end)
                 )
-        LEN = self.LEN.get(bandit.name, 50)
+        LEN = self.LEN.get(bandit.name, 75)
 
         trials = Trials()
         fmin(fn=passthrough,

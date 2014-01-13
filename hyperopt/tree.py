@@ -43,9 +43,11 @@ import rdists
 import criteria
 
 
-def sample_w_replacement(lst, n, rng):
+def sample_wo_replacement(lst, n, rng):
+    rval = list(lst)
     if len(lst):
-        return np.take(lst, rng.randint(0, len(lst), size=n))
+        rng.shuffle(rval)
+        return rval[:n]
     else:
         return list(lst)
 
@@ -185,9 +187,9 @@ class TreeAlgo(SuggestAlgo):
         t0 = time.time()
         if n_trees > 1:
             self.trees = [self.recursive_split(
-                              sample_w_replacement(self.tids,
-                                                   max(len(self.tids), 10),
-                                                   self.rng),
+                              sample_wo_replacement(self.tids,
+                                                    int(len(self.tids) * .75),
+                                                    self.rng),
                                                conditions={})
                           for ii in range(n_trees)]
         else:
@@ -202,6 +204,8 @@ class TreeAlgo(SuggestAlgo):
             return []
 
     def leaf_node(self, hps, tids, conditions, Y, X):
+        # TODO: make *only the most promising* leaf nodes more accurate
+        #       using regression model
         if len(tids) == 0:
             print 'warning: estimating mean from 0 samples'
             rval = {
@@ -223,7 +227,7 @@ class TreeAlgo(SuggestAlgo):
                 'mean': Y.mean(),
                 'var': tratio * Y.var() + 1e-6,
                 'n': len(Y)}
-        print 'leaf_node', rval
+        #print 'leaf_node', rval
         return rval
 
     def leaf_node_logEI(self, leaf, memo, thresh):
@@ -343,6 +347,7 @@ class TreeAlgo(SuggestAlgo):
                           random_draw_fraction,
                           n_seed_pts,
                           n_random_start_pts,
+                          plot_contours,
                          ):
         """
         Parameters
@@ -454,7 +459,7 @@ class TreeAlgo(SuggestAlgo):
             print 'RND', sorted(rnd_trials.losses())[:5]
             print 'ANN', sorted(tmp_trials.losses())[:5]
 
-        if max_evals > 1:
+        if max_evals > 1 and plot_contours:
             # -- PLOT CONTOURS
             xs = np.arange(-15, 15, 0.1)
             apply_node = self.config['x']['node']
@@ -490,12 +495,13 @@ class TreeAlgo(SuggestAlgo):
 
 
 def suggest(new_ids, domain, trials, seed,
-        n_optimize_in_model_calls=200,
-        thresh_epsilon=0.1, # XXX really need better default :/
-        n_trees=10,
-        sub_suggest=anneal.suggest,
-        logprior_strength=5.0,
-        ):
+            n_optimize_in_model_calls=200,
+            thresh_epsilon=0.1, # XXX really need better default :/
+            n_trees=10,
+            sub_suggest=anneal.suggest,
+            logprior_strength=5.0,
+            plot_contours=False,
+           ):
     new_id, = new_ids
     tree_algo = TreeAlgo(domain, trials, seed,
             n_trees=n_trees,
@@ -509,6 +515,7 @@ def suggest(new_ids, domain, trials, seed,
         logprior_strength=logprior_strength,
         n_seed_pts=3, # -- seed surrogate search with known good points
         n_random_start_pts=5, # -- ignore SMBO for these first points
+        plot_contours=plot_contours,
         )
     return tree_algo(new_id)
 
