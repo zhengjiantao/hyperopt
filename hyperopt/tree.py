@@ -116,6 +116,30 @@ def logprior(config, memo):
     return sum(logs)
 
 
+class ReplayBest(SuggestAlgo):
+    """Suggest previously-suggested points
+    """
+    def __init__(self, domain, trials, seed, tid_docs_losses):
+        self.n_trials_so_far = len(trials.trials)
+        self.ltd = sorted([(loss, tid, doc)
+                      for (tid, (doc, loss)) in tid_docs_losses])
+        SuggestAlgo.__init__(self, domain, trials, seed)
+
+    def on_node_hyperparameter(self, memo, node, label):
+        #print 'inserting from', self.n_trials_so_far
+        loss, tid, doc = self.ltd[self.n_trials_so_far]
+        return doc['misc']['vals'][label]
+
+    def __call__(self, *args, **kwargs):
+        rval = SuggestAlgo.__call__(self, *args, **kwargs)
+        #print rval[0]['misc']
+        # -- mark points from this algorithm.
+        #    We must filter them out in TreeAlgo.optimize_in_model.
+        for rv in rval:
+            rv['misc']['ReplayBest'] = 1
+        return rval
+
+
 class TreeAlgo(SuggestAlgo):
 
     def __init__(self, domain, trials, seed,
