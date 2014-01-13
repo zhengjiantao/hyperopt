@@ -149,6 +149,7 @@ class TreeAlgo(SuggestAlgo):
 
 
         # -- extract the information we need from the trials object
+        self.trials = trials
         doc_by_tid = {}
         for doc in trials.trials:
             tid = doc['tid']
@@ -159,6 +160,7 @@ class TreeAlgo(SuggestAlgo):
             else:
                 loss = float(loss)
             doc_by_tid[tid] = (doc, loss)
+        # -- sorted by tid ??
         self.tid_docs_losses = sorted(doc_by_tid.items())
         self.tids = np.asarray([t for (t, (d, l)) in self.tid_docs_losses])
         self.losses = np.asarray([l for (t, (d, l)) in self.tid_docs_losses])
@@ -181,38 +183,58 @@ class TreeAlgo(SuggestAlgo):
         #      to all equal the same value.
         self.min_samples_leaf = min_samples_leaf
         t0 = time.time()
-        self.trees = [self.recursive_split(sample_w_replacement(self.tids,
-                                                                len(self.tids),
-                                                                self.rng),
-                                           conditions={})
-                      for ii in range(n_trees)]
+        if n_trees > 1:
+            self.trees = [self.recursive_split(
+                              sample_w_replacement(self.tids,
+                                                   max(len(self.tids), 10),
+                                                   self.rng),
+                                               conditions={})
+                          for ii in range(n_trees)]
+        else:
+            self.trees = [self.recursive_split(self.tids, conditions={})]
         t1 = time.time()
         print 'building trees took %f seconds' % (t1 - t0)
 
     def on_node_hyperparameter(self, memo, node, label):
         if label in self.best_pt:
-            return [self.best_pt[label]]
+            return self.best_pt[label]
         else:
             return []
 
     def leaf_node(self, hps, tids, conditions, Y, X):
-        if len(tids) < 2:
-            return {
+        if len(tids) == 0:
+            print 'warning: estimating mean from 0 samples'
+            rval = {
                 'node': 'leaf',
-                'mean': 0.0,
-                'var': 1.0,
+                'mean': 0.0, # -- pure guess
+                'var': 1.0, # -- pure guess
                 'n': len(tids)}
-        else:
-            return {
+        elif len(tids) == 1:
+            rval = {
                 'node': 'leaf',
                 'mean': Y.mean(),
-                'var': Y.var() + 1e-6,
+                'var': 1.0, # -- pure guess
+                'n': len(tids)}
+        else:
+            # -- approx student-T business XXX do it correctly
+            tratio = len(tids) / max(0.1, float(len(tids) - 2))
+            rval = {
+                'node': 'leaf',
+                'mean': Y.mean(),
+                'var': tratio * Y.var() + 1e-6,
                 'n': len(Y)}
+        print 'leaf_node', rval
+        return rval
 
     def leaf_node_logEI(self, leaf, memo, thresh):
         # -- negate because EI is improvement *over* thresh, but
         #    fmin is set up for minimization
         return criteria.logEI(-leaf['mean'], leaf['var'], -thresh)
+
+    def leaf_node_meanvar(self, leaf, memo, thresh):
+        # -- negate because EI is improvement *over* thresh, but
+        #    fmin is set up for minimization
+        return leaf['mean'], leaf['var']
 
     def recursive_split(self, tids, conditions):
         """Return subtree or leaf node to handle `tids`
@@ -313,11 +335,15 @@ class TreeAlgo(SuggestAlgo):
             'above': above,
         }
 
+
     def optimize_in_model(self, max_evals,
                           sub_suggest,
                           thresh_epsilon,
                           logprior_strength,
-                          random_draw_fraction):
+                          random_draw_fraction,
+                          n_seed_pts,
+                          n_random_start_pts,
+                         ):
         """
         Parameters
         ----------
@@ -325,26 +351,28 @@ class TreeAlgo(SuggestAlgo):
         max_evals : max_evals for fmin call to optimize surrogate
         thresh_epsilon : optimize EI better than (min(losses) - epsilon)
         """
+        def descend_branch(node, memo, fn):
+            # -- node is a node in the regression tree
+            if node['node'] == 'split':
+                for k, v in memo.items():
+                    if k.arg['label'].obj == node['hp']:
+                        if v < node['thresh']:
+                            return descend_branch(node['below'], memo, fn)
+                        else:
+                            return descend_branch(node['above'], memo, fn)
+                else:
+                    raise Exception('did not find node')
+            else:
+                assert node['node'] == 'leaf'
+                return fn(node, memo, EI_thresh)
+
         def trees_logEI(expr, memo, ctrl):
             assert expr is self.domain.expr
             # -- expr is the search space expression
             # -- memo is a hyperparameter assignment
 
-            def descend_branch(node):
-                # -- node is a node in the regression tree
-                if node['node'] == 'split':
-                    for k, v in memo.items():
-                        if k.arg['label'].obj == node['hp']:
-                            if v < node['thresh']:
-                                return descend_branch(node['below'])
-                            else:
-                                return descend_branch(node['above'])
-                    else:
-                        raise Exception('did not find node')
-                else:
-                    assert node['node'] == 'leaf'
-                    return self.leaf_node_logEI(node, memo, EI_thresh)
-            logEIs = [descend_branch(tree) for tree in self.trees]
+            logEIs = [descend_branch(tree, memo, self.leaf_node_logEI)
+                      for tree in self.trees]
             # XXX is sign on this right?
             logp = logprior(self.config, memo)
             weighted_logp = logprior_strength * logp
@@ -358,7 +386,8 @@ class TreeAlgo(SuggestAlgo):
                 'loss': -loss, # -- improvements are (+) and we're minimizing
                 'status': 'ok',
             }
-        if len(self.losses) > 0:
+
+        if len(self.losses) > n_random_start_pts:
             ignore_surrogate = self.rng.rand() < random_draw_fraction
             if ignore_surrogate:
                 #    TODO: mark the points drawn from the prior, because they
@@ -373,9 +402,24 @@ class TreeAlgo(SuggestAlgo):
             max_evals = 1
             EI_thresh = 0 # -- irrelevant with max_evals == 1
 
+
+        # -- initialize a Trials object with the most promising points from the
+        #    original space:
+
+        def _suggest_first_from_best_trials(new_ids, _domain, _trials, _seed):
+            # -- return 
+            if max_evals == 1:
+                return sub_suggest(new_ids, _domain, _trials, _seed)
+
+            if len(_trials.trials) < min(n_seed_pts, len(self.tid_docs_losses)):
+                rb = ReplayBest(_domain, _trials, _seed, self.tid_docs_losses)
+                return rb(new_ids[0])
+            else:
+                return sub_suggest(new_ids, _domain, _trials, _seed)
+
         t0 = time.time()
         rnd_trials = Trials()
-        rnd_best = fmin(
+        fmin(
             trees_logEI,
             space=self.domain.expr,
             algo=rand.suggest,
@@ -385,27 +429,68 @@ class TreeAlgo(SuggestAlgo):
             trials=rnd_trials,
             )
         tmp_trials = Trials()
-        best = fmin(
+        fmin(
             trees_logEI,
             space=self.domain.expr,
-            algo=sub_suggest,
+            algo=_suggest_first_from_best_trials,
             max_evals=max_evals,
             pass_expr_memo_ctrl=True,
             rstate=self.rng,
             trials=tmp_trials,
             )
+
+        tmp_losses, tmp_docs = (tmp_trials.losses(), tmp_trials.trials)
+        assert np.all(np.isfinite(tmp_losses))
+        for loss, doc in sorted(zip(tmp_losses, tmp_docs)):
+            if doc['misc'].get('ReplayBest', 0):
+                continue
+            self.best_pt = doc['misc']['vals']
+            break
+
+
         t1 = time.time()
         if max_evals > 1:
             print 'optimizing surrogate took %f' % (t1 - t0)
             print 'RND', sorted(rnd_trials.losses())[:5]
             print 'ANN', sorted(tmp_trials.losses())[:5]
 
-        self.best_pt = best
-        return best
+        if max_evals > 1:
+            # -- PLOT CONTOURS
+            xs = np.arange(-15, 15, 0.1)
+            apply_node = self.config['x']['node']
+            ys = []
+            vus = []
+            vls = []
+            for x in xs:
+                memo = {pyll.scope.hyperopt_param('x', apply_node): x}
+                meanvars = [descend_branch(tree, memo, self.leaf_node_meanvar)
+                            for tree in self.trees]
+                treemeans, treevars = map(np.asarray,zip(*meanvars))
+                ys.append(treemeans.mean())
+                vus.append(max(treemeans + np.sqrt(treevars)))
+                vls.append(min(treemeans - np.sqrt(treevars)))
+
+            print 'vus', vus[:10]
+            print 'vls', vls[:10]
+
+            import matplotlib.pyplot as plt
+            plt.figure(1)
+            plt.cla()
+            # -- show error bars
+            plt.plot(xs, ys)
+            plt.axhline(EI_thresh, c='g')
+            plt.vlines(xs, vls, vus)
+            Xs = [t['misc']['vals']['x'][0] for t in self.trials.trials]
+            Ys = [t['result']['loss'] for t in self.trials.trials]
+            plt.scatter(Xs, Ys, c='b')
+            plt.axvline(self.best_pt['x'][0], linestyle='dashed')
+            plt.show()
+
+        return self.best_pt
 
 
 def suggest(new_ids, domain, trials, seed,
-        n_optimize_in_model_calls=50,
+        n_optimize_in_model_calls=200,
         thresh_epsilon=0.1, # XXX really need better default :/
         n_trees=10,
         sub_suggest=anneal.suggest,
@@ -417,11 +502,14 @@ def suggest(new_ids, domain, trials, seed,
             min_samples_leaf=2,
             )
     tree_algo.optimize_in_model(
-            max_evals=n_optimize_in_model_calls,
-            sub_suggest=sub_suggest,
-            thresh_epsilon=thresh_epsilon,
-            random_draw_fraction=0.25,  # SMAC sets this at 0.25
-            logprior_strength=logprior_strength)
+        max_evals=n_optimize_in_model_calls,
+        sub_suggest=sub_suggest,
+        thresh_epsilon=thresh_epsilon,
+        random_draw_fraction=0.25,  # SMAC sets this at 0.25
+        logprior_strength=logprior_strength,
+        n_seed_pts=3, # -- seed surrogate search with known good points
+        n_random_start_pts=5, # -- ignore SMBO for these first points
+        )
     return tree_algo(new_id)
 
 # -- flake-8 abhors blank line EOF
