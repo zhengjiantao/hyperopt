@@ -594,9 +594,12 @@ class Trials(object):
 
     @property
     def best_trial(self):
-        results = self.results
-        best = np.argmin([r.get('loss', float('inf')) for r in results])
-        return self.trials[best]
+        candidates = [t for t in self.trials
+                      if t['result']['status'] == STATUS_OK]
+        losses = [float(t['result']['loss']) for t in candidates]
+        assert not np.any(np.isnan(losses))
+        best = np.argmin(losses)
+        return candidates[best]
 
     @property
     def argmin(self):
