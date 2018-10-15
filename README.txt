@@ -1,3 +1,4 @@
+贝叶斯超参数优化
 hyperopt: Distributed Asynchronous Hyper-parameter Optimization
 ===============================================================
 
